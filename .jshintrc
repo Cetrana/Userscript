@@ -39,6 +39,7 @@
         "html_beautify": false,
         "css_beautify": false,
         "js_beautify": false,
-        "waitForKeyElements": false
+        "waitForKeyElements": false,
+        "self": false
     }
 }
