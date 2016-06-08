@@ -3,14 +3,15 @@
 // @name         blogtruyen downloader
 // @namespace    http://devs.forumvi.com
 // @description  Download manga on blogtruyen.com
-// @version      1.3.1
+// @version      2.0.0
 // @icon         http://i.imgur.com/qx0kpfr.png
 // @author       Zzbaivong
 // @license      MIT
 // @include      http://blogtruyen.com/truyen/*
 // @require      https://code.jquery.com/jquery-2.2.4.min.js
-// @require      https://greasyfork.org/scripts/19855-jszip/code/jszip.js?version=126859
 // @require      https://greasyfork.org/scripts/18532-filesaver/code/FileSaver.js?version=128198
+// @resource     jszip https://greasyfork.org/scripts/19855-jszip/code/jszip.js?version=126859
+// @resource     worker https://greasyfork.org/scripts/20372-zipped/code/zipped.js?version=130355
 // @noframes
 // @connect      self
 // @connect      blogspot.com
@@ -25,6 +26,7 @@
 // @supportURL   https://github.com/baivong/Userscript/issues
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getResourceText
 // ==/UserScript==
 
 jQuery(function ($) {
@@ -54,7 +56,7 @@ jQuery(function ($) {
             }
         };
 
-    function deferredAddZip(url, filename, current, total, zip, $download) {
+    function deferredAddZip(url, filename, current, total) {
         var deferred = $.Deferred();
 
         GM_xmlhttpRequest({
@@ -62,7 +64,12 @@ jQuery(function ($) {
             url: url,
             responseType: 'arraybuffer',
             onload: function (response) {
-                zip.file(filename, response.response);
+                worker.postMessage({
+                    run: false,
+                    index: current,
+                    name: filename,
+                    content: response.response
+                });
                 ++counter[current];
                 deferred.resolve(response);
             },
@@ -71,7 +78,7 @@ jQuery(function ($) {
                 deferred.reject(err);
             },
             onreadystatechange: function () {
-                $download.text((counter[current] - 1) + '/' + total);
+                $button[current].text((counter[current] - 1) + '/' + total);
             }
         });
 
@@ -121,9 +128,8 @@ jQuery(function ($) {
     }
 
     function getChaper(obj) {
-        var $this = $(obj.download),
+        var $this = $button[obj.current],
             $contents = obj.contentChap.find('img'),
-            zip = new JSZip(),
             deferreds = [],
             images = [];
 
@@ -140,7 +146,10 @@ jQuery(function ($) {
             $this.text(configs.lang.WAITING).css('color', configs.color.WAITING);
 
             $contents.each(function (i, v) {
-                images[i] = v.src.replace(/^.+&url=/, '');
+                images[i] = v.src;
+                if (obj.list) images[i] = $(v).data('src');
+                images[i] = decodeURIComponent(images[i]);
+                images[i] = images[i].replace(/^.+&url=/, '');
                 images[i] = images[i].replace(/(https?:\/\/)lh(\d)(\.bp\.blogspot\.com)/, '$1$2$3'); // $2 = (Math.floor((Math.random() * 4) + 1))
                 images[i] = images[i].replace(/\?.+$/, '');
                 if (images[i].indexOf('blogspot.com') !== -1) images[i] += '?imgmax=0';
@@ -154,43 +163,28 @@ jQuery(function ($) {
                 if (filetype === filename) filetype = 'jpg';
                 filename = pad(i, 3) + '.' + filetype;
 
-                deferreds.push(deferredAddZip(images[i], filename, obj.current, images.length, zip, $this));
+                deferreds.push(deferredAddZip(images[i], filename, obj.current, images.length));
             });
         }
 
         $.when.apply($, deferreds).done(function () {
-            $this.text(configs.lang.COMPLETE).css({
-                color: configs.color.COMPLETE,
-                'pointer-events': 'auto'
-            });
+            $this.text(configs.lang.COMPLETE);
         }).fail(function (err) {
             obj.nameChap = '0__Error__' + obj.nameChap;
             $this.css('color', configs.color.ERROR);
             console.error(err);
         }).always(function () {
-            zip.generateAsync({
-                type: 'blob'
-            }).then(function (blob) {
-                var zipName = $.trim(obj.nameChap) + '.zip';
-
-                $this.attr({
-                    href: window.URL.createObjectURL(blob),
-                    download: zipName
-                }).off('click');
-
-                saveAs(blob, zipName);
-
-                ++complete;
-                updateTitle();
-
-                if (complete === progress) notiDisplay();
-            }, function (reason) {
-                console.error(reason);
+            worker.postMessage({
+                run: true,
+                index: obj.current,
+                name: $.trim(obj.nameChap) + '.zip'
             });
+
+            ++complete;
+            updateTitle();
+
             nextDownload();
-            if (--alertUnload <= 0) {
-                $(window).off('beforeunload');
-            }
+            if (--alertUnload <= 0) $(window).off('beforeunload');
         });
     }
 
@@ -214,6 +208,9 @@ jQuery(function ($) {
         });
     }
 
+
+    window.URL = window.URL || window.webkitURL;
+
     var $download = $('<a>', {
             'class': 'chapter-download',
             href: '#download',
@@ -236,7 +233,44 @@ jQuery(function ($) {
         nextChapter = 0,
         totalChapter = 0,
         allowNotification = true,
-        comicName;
+        comicName,
+        // workerText = '(function(){function e(a,c){var d=new JSZip;b["item"+a].forEach(function(a){d.file(a.name,a.content)});d.generateAsync({type:"blob"}).then(function(b){self.postMessage({index:a,name:c,content:b})},function(a){self.postMessage(a)})}var b={};self.addEventListener("message",function(a){var c="item"+a.data.index;b[c]||(b[c]=[]);a.data.run?e(a.data.index,a.data.name):b[c].push({name:a.data.name,content:a.data.content})},!1)})();',
+        workerBlob = new Blob([(GM_getResourceText('jszip') + GM_getResourceText('worker'))], {
+            type: 'text/javascript'
+        }),
+        workerURL = window.URL.createObjectURL(workerBlob),
+        worker = new Worker(workerURL),
+        $button = [];
+
+
+    worker.addEventListener('message', function (event) {
+        var $currBtn = $button[event.data.index];
+
+        $currBtn.attr({
+            href: window.URL.createObjectURL(event.data.content),
+            download: event.data.name
+        }).css({
+            color: configs.color.COMPLETE,
+            'pointer-events': 'auto'
+        });
+
+        setTimeout(function () {
+            window.URL.revokeObjectURL($currBtn.attr('href'));
+            $currBtn.css({
+                color: configs.color.WAITING,
+                'pointer-events': 'none'
+            }).attr('href', '#remove');
+        }, 15000);
+
+        saveAs(event.data.content, event.data.name);
+        if (complete === progress) notiDisplay();
+
+    }, false);
+
+    worker.addEventListener('error', function (err) {
+        console.error(err);
+    }, false);
+
 
     Notification.requestPermission(function (result) {
         if (result === 'denied') {
@@ -250,7 +284,6 @@ jQuery(function ($) {
     });
     if (Notification.permission !== 'denied') Notification.requestPermission();
 
-    window.URL = window.URL || window.webkitURL;
 
     if (/^\/truyen\/[^\/\n]+\/[^\/\n]+$/.test(location.pathname)) {
         comicName = $('h1').text();
@@ -260,6 +293,8 @@ jQuery(function ($) {
         $download.one('click', function (e) {
             e.preventDefault();
 
+            $button[current] = $(this);
+
             ++progress;
 
             warningClose();
@@ -267,7 +302,7 @@ jQuery(function ($) {
 
             counter[current] = 1;
             getChaper({
-                download: this,
+                list: false,
                 contentChap: $('#content'),
                 nameChap: comicName,
                 current: current
@@ -297,37 +332,34 @@ jQuery(function ($) {
         $downloadList.one('click', function (e) {
             e.preventDefault();
 
+            var $this = $(this),
+                $chapLink = $this.closest('p').find('.title a');
+
+            $button[current] = $this;
+
             ++progress;
             updateTitle();
-
-            var _this = this,
-                $this = $(_this),
-                $chapLink = $this.closest('p').find('.title a');
 
             $this.css('pointer-events', 'none');
 
             if (alertUnload <= 0) warningClose();
             ++alertUnload;
 
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: $chapLink.attr('href'),
-                responseType: 'text',
-                onload: function (response) {
-                    var $data = $(response.responseText);
+            $.get($chapLink.attr('href')).done(function (responseText) {
+                responseText = responseText.replace(/<img [^>]*src=['"]([^'"]+)[^>]*>/gi, function (match, capture) {
+                    return '<img data-src="' + capture + '" />';
+                });
 
-                    counter[current] = 1;
-                    getChaper({
-                        download: _this,
-                        contentChap: $data.find('#content'),
-                        nameChap: $chapLink.text(),
-                        current: current
-                    });
-                    ++current;
-                },
-                onerror: function (err) {
-                    console.error(err);
-                }
+                counter[current] = 1;
+                getChaper({
+                    list: true,
+                    contentChap: $(responseText).find('#content'),
+                    nameChap: $chapLink.text(),
+                    current: current
+                });
+                ++current;
+            }).fail(function (err) {
+                console.error(err);
             });
         }).parent().on('contextmenu', function (e) {
             e.preventDefault();
