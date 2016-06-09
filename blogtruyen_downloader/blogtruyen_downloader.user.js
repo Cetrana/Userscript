@@ -3,29 +3,19 @@
 // @name         blogtruyen downloader
 // @namespace    http://devs.forumvi.com
 // @description  Download manga on blogtruyen.com
-// @version      2.0.0
+// @version      2.1.0
 // @icon         http://i.imgur.com/qx0kpfr.png
 // @author       Zzbaivong
 // @license      MIT
 // @include      http://blogtruyen.com/truyen/*
 // @require      https://code.jquery.com/jquery-2.2.4.min.js
 // @require      https://greasyfork.org/scripts/18532-filesaver/code/FileSaver.js?version=128198
+// @require      https://greasyfork.org/scripts/20389-jquery-ajax-blob-arraybuffer/code/jquery-ajax-blob-arraybuffer.js?version=130475
 // @resource     jszip https://greasyfork.org/scripts/19855-jszip/code/jszip.js?version=126859
 // @resource     worker https://greasyfork.org/scripts/20372-zipped/code/zipped.js?version=130355
 // @noframes
-// @connect      self
-// @connect      blogspot.com
-// @connect      googleusercontent.com
-// @connect      imgur.com
-// @connect      zdn.vn
-// @connect      postimg.org
-// @connect      photobucket.com
-// @connect      zing.vn
-// @connect      tinypic.com
-// @connect      *
 // @supportURL   https://github.com/baivong/Userscript/issues
 // @run-at       document-idle
-// @grant        GM_xmlhttpRequest
 // @grant        GM_getResourceText
 // ==/UserScript==
 
@@ -59,27 +49,26 @@ jQuery(function ($) {
     function deferredAddZip(url, filename, current, total) {
         var deferred = $.Deferred();
 
-        GM_xmlhttpRequest({
-            method: 'GET',
+        if (url.search(/(googleusercontent|blogspot)\.com/) === -1) url = '//images-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&url=' + url;
+
+        $.ajax({
             url: url,
-            responseType: 'arraybuffer',
-            onload: function (response) {
-                worker.postMessage({
-                    run: false,
-                    index: current,
-                    name: filename,
-                    content: response.response
-                });
-                ++counter[current];
-                deferred.resolve(response);
-            },
-            onerror: function (err) {
-                console.error(err);
-                deferred.reject(err);
-            },
-            onreadystatechange: function () {
-                $button[current].text((counter[current] - 1) + '/' + total);
-            }
+            dataType: 'blob',
+            processData: false
+        }).always(function () {
+            $button[current].text((counter[current] - 1) + '/' + total);
+        }).done(function (result) {
+            worker.postMessage({
+                run: false,
+                index: current,
+                name: filename,
+                content: result
+            });
+            ++counter[current];
+            deferred.resolve(result);
+        }).fail(function (err) {
+            console.error(err);
+            deferred.reject(err);
         });
 
         return deferred;
